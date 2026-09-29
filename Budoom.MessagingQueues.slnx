@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Budoom.MessagingQueues.Abstractions/Budoom.MessagingQueues.Abstractions.csproj" />
+    <Project Path="src/Budoom.MessagingQueues.RabbitMq/Budoom.MessagingQueues.RabbitMq.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Budoom.MessagingQueues.RabbitMq.Tests/Budoom.MessagingQueues.RabbitMq.Tests.csproj" />
+  </Folder>
+</Solution>
