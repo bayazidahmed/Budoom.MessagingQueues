@@ -47,7 +47,7 @@ internal sealed class MessagePublisher(
             Headers = amqpHeaders
         };
 
-        await PublishRawAsync(topic, routingKey, messageSerializer.Serialize(message), basicProperties, cancellationToken);
+        await PublishRawAsync(topic, routingKey, messageSerializer.Serialize(message), basicProperties, topologyRegistry.RequiresBoundQueue(topic), cancellationToken);
     }
 
     /// <summary>
@@ -59,14 +59,17 @@ internal sealed class MessagePublisher(
         string routingKey,
         ReadOnlyMemory<byte> body,
         BasicProperties basicProperties,
+        bool mandatory,
         CancellationToken cancellationToken = default)
     {
         await using var lease = await channelPool.RentAsync(cancellationToken);
 
+        // Mandatory makes the broker return a message no queue receives, and with confirmation tracking the
+        // client then fails the publish. Not mandatory, the broker drops it quietly instead.
         await lease.Channel.BasicPublishAsync(
             exchange: exchange,
             routingKey: routingKey,
-            mandatory: true,
+            mandatory: mandatory,
             basicProperties: basicProperties,
             body: body,
             cancellationToken: cancellationToken);

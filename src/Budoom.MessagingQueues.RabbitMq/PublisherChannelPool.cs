@@ -69,7 +69,8 @@ internal sealed class PublisherChannelPool(
             cancellationToken);
 
         // Published with mandatory set, so anything the broker cannot route comes back here instead
-        // of vanishing. That is almost always a missing binding or a typo in a routing key.
+        // of vanishing. That is almost always a missing binding or a typo in a routing key. Exchanges
+        // declared WithoutBoundQueue publish without it, so their unroutable messages never come back.
         channel.BasicReturnAsync += (_, returnEventArgs) =>
         {
             RabbitMqLog.Returned(logger, returnEventArgs.Exchange, returnEventArgs.RoutingKey, returnEventArgs.ReplyCode, returnEventArgs.ReplyText);

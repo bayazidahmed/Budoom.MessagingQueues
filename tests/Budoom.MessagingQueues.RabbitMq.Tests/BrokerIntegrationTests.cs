@@ -103,6 +103,50 @@ public sealed class BrokerIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Publish_with_no_bound_queue_fails_unless_the_exchange_is_declared_WithoutBoundQueue()
+    {
+        Assert.SkipWhen(ConnectionString is null, "RABBITMQ_TEST_CONNECTION is not set.");
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var strictExchange = $"it-strict-{suffix}";
+        var unboundExchange = $"it-unbound-{suffix}";
+
+        var builder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings());
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MessagingQueues:RabbitMq:ConnectionString"] = ConnectionString
+        });
+        builder.AddMessagingQueueRabbitMqInfrastructureServices();
+        builder.AddRabbitMqTopology(topology =>
+        {
+            topology.Exchange(strictExchange, ExchangeType.Fanout);
+            topology.Exchange(unboundExchange, ExchangeType.Fanout).WithoutBoundQueue();
+        });
+
+        using var host = builder.Build();
+        await host.StartAsync(cancellationToken);
+
+        try
+        {
+            await WaitForHealthyAsync(host, cancellationToken);
+
+            var publisher = host.Services.GetRequiredService<IMessagePublisher>();
+
+            await publisher.PublishAsync(unboundExchange, "", new WorkMessage(1, "nobody listens"), cancellationToken: cancellationToken);
+
+            await Assert.ThrowsAnyAsync<RabbitMQ.Client.Exceptions.PublishException>(() =>
+                publisher.PublishAsync(strictExchange, "", new WorkMessage(2, "nobody listens"), cancellationToken: cancellationToken));
+        }
+        finally
+        {
+            await host.StopAsync(CancellationToken.None);
+            await DeleteAsync(strictExchange, []);
+            await DeleteAsync(unboundExchange, []);
+        }
+    }
+
     private static async Task WaitForHealthyAsync(IHost host, CancellationToken cancellationToken)
     {
         var healthCheckService = host.Services.GetRequiredService<HealthCheckService>();

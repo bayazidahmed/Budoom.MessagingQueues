@@ -12,7 +12,7 @@ Support for Azure Service Bus and Kafka is planned behind the same interfaces.
 ## Features
 
 - **Topology declared in code.** Exchanges, queues and bindings are declared once at startup, so publishing and consuming just use names.
-- **Confirmed, persistent publishing.** A publish completes only after the broker has accepted the message. Unroutable messages are logged rather than silently dropped.
+- **Confirmed, persistent publishing.** A publish completes only after the broker has accepted the message. A message no queue receives fails the publish and is logged, rather than silently dropped — unless its exchange is declared `.WithoutBoundQueue()`.
 - **Self-healing consumers.** A consumer keeps running through connection drops — no reconnect loop needed in your code.
 - **Delayed retry with backoff**, with no broker plugin required, plus an error queue for messages that can't be processed.
 - **Health check** and **configuration binding** out of the box.
@@ -161,6 +161,23 @@ Durable queues get delayed retry by default. Each distinct delay gets its own ho
 - Change the default for all queues with the `RetryDelays` setting, or per queue with `.WithRetry(...)`.
 - Turn retry off for a queue with `.WithoutRetry()`; calling `RetryAsync` on its messages then throws.
 - `RetryAsync(delay: ...)` can override the delay for one message; it is rounded up to the nearest configured delay.
+
+## Exchanges with no bound queue
+
+By default a publish must reach at least one queue. If nothing is bound to the exchange, or no binding matches the routing key, the broker returns the message: it is logged as an error and `PublishAsync` throws a `RabbitMQ.Client.Exceptions.PublishException`. That is almost always a missing binding or a mistyped routing key, so failing loudly is the right default.
+
+Some exchanges are expected to have no subscribers for a while — events published for whoever may want them later. Declare those with `.WithoutBoundQueue()`:
+
+```csharp
+builder.AddRabbitMqTopology(topology =>
+{
+    topology.Exchange("panel-update", ExchangeType.Fanout).WithoutBoundQueue();
+});
+```
+
+A publish to such an exchange succeeds whether or not anything is bound; the broker drops a message nobody receives, and nothing is thrown or logged. It applies to `PublishAsync` on that exchange only. `SendAsync`, and exchanges you have not declared, keep the default.
+
+`Exchange(...)` returns the exchange's options, which also carry `Exchange`, `Queue` and `TransientQueue`, so declarations still chain.
 
 ## Queue types
 

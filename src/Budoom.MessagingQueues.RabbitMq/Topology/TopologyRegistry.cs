@@ -9,6 +9,11 @@ internal sealed class TopologyRegistry(IReadOnlyList<ExchangeDefinition> exchang
     private readonly Dictionary<string, QueueDefinition> queuesByLogicalName =
         queues.ToDictionary(queue => queue.LogicalName, StringComparer.Ordinal);
 
+    private readonly HashSet<string> exchangesWithoutBoundQueue = exchanges
+        .Where(exchange => !exchange.RequiresBoundQueue)
+        .Select(exchange => exchange.Name)
+        .ToHashSet(StringComparer.Ordinal);
+
     public IReadOnlyList<ExchangeDefinition> Exchanges { get; } = exchanges;
 
     public IReadOnlyList<QueueDefinition> Queues { get; } = queues;
@@ -23,6 +28,13 @@ internal sealed class TopologyRegistry(IReadOnlyList<ExchangeDefinition> exchang
     }
 
     public string GetBrokerName(string queue) => GetQueue(queue).Name;
+
+    /// <summary>
+    /// Whether a publish to the exchange must reach a queue. True unless it was declared with
+    /// <see cref="ExchangeTopologyBuilder.WithoutBoundQueue"/>, including for the default exchange and for
+    /// exchanges another system owns.
+    /// </summary>
+    public bool RequiresBoundQueue(string exchange) => !exchangesWithoutBoundQueue.Contains(exchange);
 
     /// <summary>
     /// Maps a logical queue name to the name on the broker. Unknown names pass through unchanged so

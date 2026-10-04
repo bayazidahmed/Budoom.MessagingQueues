@@ -79,6 +79,7 @@ internal sealed class RabbitMqReceivedMessage<TMessage>(
             queue.RetryQueueName(resolvedDelay),
             Body,
             properties,
+            mandatory: true,
             cancellationToken);
 
         await SettleAsync(context.Channel.BasicAckAsync(deliveryTag, multiple: false, cancellationToken));
@@ -104,6 +105,7 @@ internal sealed class RabbitMqReceivedMessage<TMessage>(
             errorQueueName,
             Body,
             properties,
+            mandatory: true,
             cancellationToken);
 
         await SettleAsync(context.Channel.BasicAckAsync(deliveryTag, multiple: false, cancellationToken));

@@ -16,7 +16,8 @@ public sealed class TopologyBuilder
     /// routing keys dotted, so any name says what kind of object it is.
     /// </param>
     /// <param name="type">One of the <see cref="RabbitMQ.Client.ExchangeType"/> constants.</param>
-    public TopologyBuilder Exchange(string name, string type)
+    /// <returns>The exchange's own options, such as <see cref="ExchangeTopologyBuilder.WithoutBoundQueue"/>.</returns>
+    public ExchangeTopologyBuilder Exchange(string name, string type)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(type);
@@ -26,13 +27,16 @@ public sealed class TopologyBuilder
             if (!string.Equals(existing.Type, type, StringComparison.Ordinal))
                 throw new InvalidOperationException($"Exchange '{name}' is already declared as '{existing.Type}' and cannot be redeclared as '{type}'.");
 
-            return this;
+            return new ExchangeTopologyBuilder(this, name);
         }
 
         exchanges.Add(name, new ExchangeDefinition(name, type));
 
-        return this;
+        return new ExchangeTopologyBuilder(this, name);
     }
+
+    internal void AllowWithoutBoundQueue(string name) =>
+        exchanges[name] = exchanges[name] with { RequiresBoundQueue = false };
 
     /// <summary>
     /// Declares a durable quorum queue shared by every instance: deliveries are spread across

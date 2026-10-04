@@ -82,6 +82,48 @@ public sealed class TopologyTests
     }
 
     [Fact]
+    public void Exchanges_require_a_bound_queue_unless_declared_WithoutBoundQueue()
+    {
+        var topology = new TopologyBuilder();
+        topology.Exchange("orders", ExchangeType.Topic);
+        topology.Exchange("notices", ExchangeType.Fanout).WithoutBoundQueue();
+
+        var registry = topology.Build(Options, "host-1");
+
+        Assert.True(registry.RequiresBoundQueue("orders"));
+        Assert.False(registry.RequiresBoundQueue("notices"));
+        Assert.True(registry.RequiresBoundQueue("someone_elses_exchange"));
+        Assert.True(registry.RequiresBoundQueue(""));
+    }
+
+    [Fact]
+    public void Redeclaring_an_exchange_keeps_WithoutBoundQueue()
+    {
+        var topology = new TopologyBuilder();
+        topology.Exchange("notices", ExchangeType.Fanout).WithoutBoundQueue();
+        topology.Exchange("notices", ExchangeType.Fanout);
+
+        Assert.False(topology.Build(Options, "host-1").RequiresBoundQueue("notices"));
+    }
+
+    [Fact]
+    public void Exchange_declarations_still_chain()
+    {
+        var topology = new TopologyBuilder();
+        topology
+            .Exchange("orders", ExchangeType.Topic)
+            .Exchange("notices", ExchangeType.Fanout)
+            .WithoutBoundQueue()
+            .Queue("order_placed")
+            .BindTo("orders", "order.placed");
+
+        var registry = topology.Build(Options, "host-1");
+
+        Assert.Equal(2, registry.Exchanges.Count);
+        Assert.Equal("order_placed", registry.GetBrokerName("order_placed"));
+    }
+
+    [Fact]
     public void Unknown_queue_names_pass_through_on_send_but_throw_on_lookup()
     {
         var registry = new TopologyBuilder().Build(Options, "host-1");
