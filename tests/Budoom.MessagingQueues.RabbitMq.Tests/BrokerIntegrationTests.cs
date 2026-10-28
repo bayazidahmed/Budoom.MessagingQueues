@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
+using System.Diagnostics;
 
 namespace Budoom.MessagingQueues.RabbitMq.Tests;
 
@@ -50,7 +51,16 @@ public sealed class BrokerIntegrationTests
             var publisher = host.Services.GetRequiredService<IMessagePublisher>();
             var consumer = host.Services.GetRequiredService<IMessageConsumer>();
 
-            await publisher.PublishAsync(exchange, "work.created", new WorkMessage(7, "hello"), new Dictionary<string, string> { ["tenant"] = "t1" }, cancellationToken);
+            // Publish inside a span: every delivery, including the retried one, must continue its trace.
+            using var listener = TracingTests.Listen();
+            ActivityTraceId publishedTraceId;
+
+            using (var publishing = TracingTests.TestSource.StartActivity("publish work"))
+            {
+                publishedTraceId = publishing!.TraceId;
+
+                await publisher.PublishAsync(exchange, "work.created", new WorkMessage(7, "hello"), new Dictionary<string, string> { ["tenant"] = "t1" }, cancellationToken);
+            }
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(30));
@@ -61,6 +71,9 @@ public sealed class BrokerIntegrationTests
             {
                 deliveries++;
 
+                using var activity = message.StartActivity();
+
+                Assert.Equal(publishedTraceId, activity!.TraceId);
                 Assert.Equal(new WorkMessage(7, "hello"), message.Message);
                 Assert.Equal("t1", message.Headers["tenant"]);
                 Assert.Equal(deliveries, message.Attempt);

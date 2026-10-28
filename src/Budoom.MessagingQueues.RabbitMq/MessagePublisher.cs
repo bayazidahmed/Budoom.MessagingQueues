@@ -1,5 +1,6 @@
 using Budoom.MessagingQueues.RabbitMq.Topology;
 using RabbitMQ.Client;
+using System.Diagnostics;
 
 namespace Budoom.MessagingQueues.RabbitMq;
 
@@ -62,6 +63,8 @@ internal sealed class MessagePublisher(
         bool mandatory,
         CancellationToken cancellationToken = default)
     {
+        InjectTraceContext(basicProperties);
+
         await using var lease = await channelPool.RentAsync(cancellationToken);
 
         // Mandatory makes the broker return a message no queue receives, and with confirmation tracking the
@@ -75,5 +78,30 @@ internal sealed class MessagePublisher(
             cancellationToken: cancellationToken);
 
         RabbitMqLog.Published(logger, exchange, routingKey);
+    }
+
+    /// <summary>
+    /// Writes the current trace context into the message headers (W3C <c>traceparent</c>/<c>tracestate</c>),
+    /// so the consumer's <see cref="ReceivedMessage{TMessage}.StartActivity"/> continues the same trace.
+    /// </summary>
+    /// <remarks>
+    /// Done here rather than left to RabbitMQ.Client, which only propagates when its own
+    /// <c>RabbitMQ.Client.Publisher</c> source is being listened to. When it is, it overwrites these
+    /// headers with its publish span, which is a child of the current activity — still the same trace.
+    /// Covers retry and dead-letter copies too: a retried message continues the trace of the attempt
+    /// that failed. With no current activity, headers copied from the original delivery are left as they are.
+    /// </remarks>
+    private static void InjectTraceContext(BasicProperties basicProperties)
+    {
+        if (Activity.Current is not { } current)
+            return;
+
+        var headers = basicProperties.Headers ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+
+        DistributedContextPropagator.Current.Inject(current, headers, static (carrier, fieldName, fieldValue) =>
+        {
+            if (carrier is IDictionary<string, object?> amqpHeaders)
+                amqpHeaders[fieldName] = fieldValue;
+        });
     }
 }

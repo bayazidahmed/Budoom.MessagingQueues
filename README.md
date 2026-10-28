@@ -6,6 +6,7 @@ Simple, reliable messaging for .NET 10 applications. Your code talks to broker-n
 |---|---|
 | `Budoom.MessagingQueues.Abstractions` | The interfaces and types your application code uses: `IMessagePublisher`, `IMessageConsumer`, `ReceivedMessage<T>`, `IQueueNameResolver`, `RetryOutcome`, `MessageHeaderNames`. |
 | `Budoom.MessagingQueues.RabbitMq` | The RabbitMQ implementation, built on the official `RabbitMQ.Client` 7 (fully async). |
+| `Budoom.MessagingQueues.OpenTelemetry` | Optional. `AddMessagingQueuesInstrumentation()` for OpenTelemetry tracing. |
 
 Support for Azure Service Bus and Kafka is planned behind the same interfaces.
 
@@ -16,6 +17,7 @@ Support for Azure Service Bus and Kafka is planned behind the same interfaces.
 - **Self-healing consumers.** A consumer keeps running through connection drops — no reconnect loop needed in your code.
 - **Delayed retry with backoff**, with no broker plugin required, plus an error queue for messages that can't be processed.
 - **Health check** and **configuration binding** out of the box.
+- **Distributed tracing** with plain `System.Diagnostics`: a message's handling joins the trace of the request that published it, so OpenTelemetry (or any `ActivityListener`) shows one trace end to end.
 
 ## Installation
 
@@ -109,6 +111,9 @@ public sealed class OrderPlacedHandler(IMessageConsumer consumer) : BackgroundSe
     {
         await foreach (var message in consumer.ConsumeAsync<OrderPlaced>("order_placed", stoppingToken))
         {
+            // One span per message, continuing the publisher's trace. See "Tracing" below.
+            using var activity = message.StartActivity();
+
             if (message.DeserializationError is not null)
             {
                 await message.RejectAsync(stoppingToken); // unreadable: straight to the error queue
@@ -246,6 +251,62 @@ Expose it the usual way:
 ```csharp
 app.MapHealthChecks("/health");
 ```
+
+## Tracing
+
+Publishing writes the current trace context into the message headers (W3C `traceparent` / `tracestate`), on every publish: `PublishAsync`, `SendAsync`, and the copies made for retry and the error queue. On the consuming side, call `StartActivity()` first thing in the loop:
+
+```csharp
+await foreach (var message in consumer.ConsumeAsync<OrderPlaced>("order_placed", stoppingToken))
+{
+    using var activity = message.StartActivity();
+    // ... handle and settle as usual
+}
+```
+
+It starts a consumer span named `process <queue>` whose parent is the publisher's span. While it is current, the database calls, HTTP calls, logs and further publishes your handler makes all land in the same trace. When nothing is listening it returns null and costs next to nothing, so it is safe to leave in.
+
+`ConsumeAsync` can't do this for you: an activity made current inside an async iterator does not flow into the caller's loop body, which is why it is a separate call.
+
+What gets recorded:
+
+| Attribute | Value |
+|---|---|
+| `messaging.system` | `rabbitmq` |
+| `messaging.operation.type` / `.name` | `process` |
+| `messaging.destination.name` | The logical queue name |
+| `messaging.message.id`, `messaging.message.conversation_id` | `MessageId`, `CorrelationId` |
+| `messaging.message.body.size` | Body length in bytes |
+| `budoom.messaging.attempt` | Delivery number, starting at 1 |
+| `budoom.messaging.outcome` | `ack`, `nack`, `reject`, `retry` or `dead_letter`, set when you settle |
+| `budoom.messaging.reason` | The reason passed to `RetryAsync` |
+
+`RejectAsync`, dead-lettering and a `DeserializationError` set the span's status to error. A retried message continues the trace of the attempt that failed, so all attempts show up in one trace. To record an exception you caught, call `activity?.AddException(exception)`.
+
+### With OpenTelemetry
+
+```shell
+dotnet add package Budoom.MessagingQueues.OpenTelemetry
+```
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddMessagingQueuesInstrumentation()
+        .AddOtlpExporter());
+```
+
+That records the process spans from `StartActivity()` and the broker client's publish spans (exchange, routing key, how long the publish took). The broker client's deliver spans are off by default: they only cover handing a message to the consume loop, not handling it. Both can be switched:
+
+```csharp
+.AddMessagingQueuesInstrumentation(options =>
+{
+    options.IncludeBrokerPublishSpans = true;   // default
+    options.IncludeBrokerDeliverSpans = false;  // default
+})
+```
+
+The extension lives in the `OpenTelemetry.Trace` namespace, so no extra `using` is needed. Only this optional package references OpenTelemetry (`OpenTelemetry.Api`); the Abstractions and RabbitMq packages use plain `System.Diagnostics`, so any `ActivityListener` works with them too. The tag names are available as constants on `MessagingDiagnostics`.
 
 ## License
 

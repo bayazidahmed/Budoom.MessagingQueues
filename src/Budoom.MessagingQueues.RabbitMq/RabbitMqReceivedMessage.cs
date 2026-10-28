@@ -42,6 +42,8 @@ internal sealed class RabbitMqReceivedMessage<TMessage>(
 
     public override bool SupportsRetry => context.Queue.Retry is not null;
 
+    protected override string? MessagingSystem => "rabbitmq";
+
     protected override Task AckCoreAsync(CancellationToken cancellationToken) =>
         SettleAsync(context.Channel.BasicAckAsync(deliveryTag, multiple: false, cancellationToken));
 

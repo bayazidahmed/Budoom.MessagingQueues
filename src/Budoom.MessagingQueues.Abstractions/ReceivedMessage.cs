@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 
 namespace Budoom.MessagingQueues;
@@ -10,12 +11,14 @@ namespace Budoom.MessagingQueues;
 /// </summary>
 /// <remarks>
 /// Broker packages derive from this and implement the <c>…CoreAsync</c> members; the settle-once
-/// guard and the retry precondition live here so every broker behaves the same.
+/// guard, the retry precondition and the tracing live here so every broker behaves the same.
 /// </remarks>
 /// <typeparam name="TMessage">Type the JSON body was deserialized into.</typeparam>
 public abstract class ReceivedMessage<TMessage>
 {
     private int settled;
+    private int activityStarted;
+    private Activity? activity;
 
     /// <summary>Creates a delivery. Called by broker packages only.</summary>
     protected ReceivedMessage(
@@ -100,10 +103,52 @@ public abstract class ReceivedMessage<TMessage>
     /// <summary>Whether one of the settlement methods has already been called.</summary>
     public bool IsSettled => Volatile.Read(ref settled) == 1;
 
+    /// <summary>
+    /// The value of the <c>messaging.system</c> trace attribute, such as <c>rabbitmq</c>. Null leaves it off.
+    /// </summary>
+    protected virtual string? MessagingSystem => null;
+
+    /// <summary>
+    /// Starts the span that covers handling this delivery, continuing the trace of whoever published it
+    /// (the W3C trace context in the message headers). Call it first thing in the consume loop and let
+    /// it end with the loop body:
+    /// <code>using var activity = message.StartActivity();</code>
+    /// </summary>
+    /// <returns>
+    /// The started activity, or null when nothing listens to <see cref="MessagingDiagnostics.ActivitySourceName"/>
+    /// or the sampler drops it. Safe to use with <c>using</c> either way.
+    /// </returns>
+    /// <remarks>
+    /// While the activity is current, database calls, HTTP calls, logs and further publishes made during
+    /// handling join the publisher's trace. Settling the delivery records the outcome on it, and
+    /// <see cref="RejectAsync"/>, dead-lettering and a <see cref="DeserializationError"/> mark it as failed.
+    /// <c>ConsumeAsync</c> cannot start the span for you: an activity made current inside an async iterator
+    /// does not flow into the caller's loop body, which is why this is a separate call.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The span was already started for this delivery.</exception>
+    public Activity? StartActivity()
+    {
+        if (Interlocked.Exchange(ref activityStarted, 1) == 1)
+            throw new InvalidOperationException("StartActivity has already been called for this delivery. Start it once and dispose it when handling ends.");
+
+        var started = MessagingDiagnostics.StartProcessActivity(Queue, Headers, MessagingSystem, MessageId, CorrelationId, Body.Length, Attempt);
+
+        if (started is not null && DeserializationError is { } error)
+        {
+            started.AddException(error);
+            started.SetStatus(ActivityStatusCode.Error, "The message body could not be deserialized.");
+        }
+
+        activity = started;
+
+        return started;
+    }
+
     /// <summary>Handled successfully. The broker drops the message.</summary>
     public Task AckAsync(CancellationToken cancellationToken = default)
     {
         MarkSettled();
+        RecordOutcome("ack");
 
         return AckCoreAsync(cancellationToken);
     }
@@ -115,6 +160,7 @@ public abstract class ReceivedMessage<TMessage>
     public Task NackAsync(CancellationToken cancellationToken = default)
     {
         MarkSettled();
+        RecordOutcome("nack");
 
         return NackCoreAsync(cancellationToken);
     }
@@ -126,6 +172,7 @@ public abstract class ReceivedMessage<TMessage>
     public Task RejectAsync(CancellationToken cancellationToken = default)
     {
         MarkSettled();
+        RecordOutcome("reject", failure: "The message was rejected and moved to the error queue.");
 
         return RejectCoreAsync(cancellationToken);
     }
@@ -156,7 +203,9 @@ public abstract class ReceivedMessage<TMessage>
 
         MarkSettled();
 
-        return RetryCoreAsync(delay, reason, cancellationToken);
+        return activity is null
+            ? RetryCoreAsync(delay, reason, cancellationToken)
+            : RetryAndRecordAsync(delay, reason, cancellationToken);
     }
 
     /// <summary>Broker-specific acknowledgement.</summary>
@@ -170,6 +219,33 @@ public abstract class ReceivedMessage<TMessage>
 
     /// <summary>Broker-specific delayed retry. Only called when <see cref="SupportsRetry"/> is true.</summary>
     protected abstract Task<RetryOutcome> RetryCoreAsync(TimeSpan? delay, string? reason, CancellationToken cancellationToken);
+
+    private async Task<RetryOutcome> RetryAndRecordAsync(TimeSpan? delay, string? reason, CancellationToken cancellationToken)
+    {
+        var outcome = await RetryCoreAsync(delay, reason, cancellationToken);
+
+        if (outcome == RetryOutcome.DeadLettered)
+            RecordOutcome("dead_letter", reason, failure: reason ?? "Attempts exhausted; the message was moved to the error queue.");
+        else
+            RecordOutcome("retry", reason);
+
+        return outcome;
+    }
+
+    /// <summary>Notes how the delivery was settled on its span, when <see cref="StartActivity"/> started one.</summary>
+    private void RecordOutcome(string outcome, string? reason = null, string? failure = null)
+    {
+        if (activity is not { } current)
+            return;
+
+        current.SetTag(MessagingDiagnostics.OutcomeTagName, outcome);
+
+        if (!string.IsNullOrWhiteSpace(reason))
+            current.SetTag(MessagingDiagnostics.ReasonTagName, reason);
+
+        if (failure is not null)
+            current.SetStatus(ActivityStatusCode.Error, failure);
+    }
 
     private void MarkSettled()
     {

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Budoom.MessagingQueues.OpenTelemetry</RootNamespace>
+    <Description>OpenTelemetry registration for Budoom.MessagingQueues: one AddMessagingQueuesInstrumentation() call records a span per handled message, joined to the trace of whoever published it, plus the broker client's publish spans.</Description>
+    <PackageTags>$(PackageTags);opentelemetry;tracing;observability</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Budoom.MessagingQueues.Abstractions\Budoom.MessagingQueues.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry.Api" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Budoom.MessagingQueues.RabbitMq.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

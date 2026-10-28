@@ -13,7 +13,7 @@
 
   <!-- Package metadata shared by every package in this repo. Bump Version here (or pass -p:Version=1.2.3) before packing a release. -->
   <PropertyGroup>
-    <Version>0.2.0-beta</Version>
+    <Version>0.3.1-beta</Version>
     <Authors>bayazidahmed</Authors>
     <Company>Budoom</Company>
     <Copyright>Copyright © Ahmed Bayazid</Copyright>
